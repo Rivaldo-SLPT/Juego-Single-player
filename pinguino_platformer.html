@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Pingüino Aventurero</title>
+<style>
+  html,body{margin:0;padding:0;background:#5c94fc;overflow:hidden;font-family:'Courier New',monospace;}
+  #gameCanvas{display:block;margin:0 auto;background:#5c94fc;image-rendering:pixelated;}
+  #ui{
+    position:absolute;top:10px;left:10px;color:#fff;font-size:20px;
+    text-shadow:2px 2px 0 #000;z-index:10;user-select:none;
+  }
+  #msg{
+    position:absolute;top:45%;left:50%;transform:translate(-50%,-50%);
+    color:#fff;font-size:36px;text-shadow:3px 3px 0 #000;text-align:center;
+    display:none;z-index:20;
+  }
+  #startScreen{
+    position:absolute;top:0;left:0;width:100%;height:100%;
+    background:#5c94fc;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    color:#fff;text-shadow:3px 3px 0 #000;z-index:30;
+  }
+  #startScreen h1{font-size:48px;margin-bottom:10px;}
+  #startScreen p{font-size:18px;}
+  button{
+    font-family:'Courier New',monospace;font-size:22px;padding:10px 25px;margin-top:20px;
+    background:#e94f37;color:#fff;border:4px solid #fff;cursor:pointer;box-shadow:4px 4px 0 #000;
+  }
+  button:hover{background:#ff6b52;}
+  #container{position:relative;width:800px;margin:20px auto;}
+</style>
+</head>
+<body>
+<div id="container">
+  <div id="ui">
+    <div>❤️ Vidas: <span id="lives">3</span> &nbsp; ⭐ Puntos: <span id="score">0</span> &nbsp; 🐟 Peces: <span id="fish">0</span> &nbsp; Nivel: <span id="levelNum">1</span></div>
+  </div>
+  <div id="msg"></div>
+  <canvas id="gameCanvas" width="800" height="450"></canvas>
+  <div id="startScreen">
+    <h1>🐧 PINGÜINO AVENTURERO 🐧</h1>
+    <p>Flechas / A-D: moverse &nbsp; | &nbsp; ESPACIO / W: saltar &nbsp; | &nbsp; SHIFT: correr</p>
+    <p>Recoge peces, salta sobre enemigos, llega a la bandera 🏁</p>
+    <p>Toca el pez dorado para deslizarte a gran velocidad ❄️</p>
+    <button id="startBtn">JUGAR</button>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+// ---------- Configuración general y física tipo Super Mario Bros ----------
+const GRAVITY = 0.38;
+const FRICTION = 0.82;
+const MAX_FALL_SPEED = 12;
+const COYOTE_TIME = 8;
+const JUMP_BUFFER = 9;
+
+const PLAYER_CONFIG = {
+  acceleration: 0.34,
+  runAcceleration: 0.55,
+  topSpeed: 3.1,
+  runTopSpeed: 4.7,
+  slideTopSpeed: 5.0,
+  jumpForce: 9.6,
+  bigJumpForce: 10.4,
+  bigTopSpeed: 3.6,
+  jumpCutoff: 0.2,
+};
+
+const ENTITY_SPEED = {
+  crab: 1.4,
+  bird: 2.7,
+};
+
+let keys = {};
+let jumpQueued = false;
+
+function isRunning(){
+  return keys['ShiftLeft'] || keys['ShiftRight'] || keys['KeyX'];
+}
+
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','ShiftLeft','ShiftRight'].includes(e.code)) {
+    e.preventDefault();
+    if(!e.repeat && ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) jumpQueued = true;
+  }
+});
+document.addEventListener('keyup', e => keys[e.code] = false);
+
+// ---------- Sección 1: datos de los niveles ----------
+// Los niveles se definen con listas de plataformas, enemigos, peces y la posición de la bandera.
+// Esto permite crear escenarios más flexibles que un grid tradicional.
+
+function makeLevel1(){
+  return {
+    width: 3200,
+    bg: '#5c94fc',
+    groundY: 400,
+    platforms: [
+      // x, y, w, h, type
+      {x:0,y:400,w:800,h:50,type:'ground'},
+      {x:900,y:400,w:400,h:50,type:'ground'},
+      {x:1400,y:400,w:200,h:50,type:'ground'},
+      {x:1700,y:400,w:1500,h:50,type:'ground'},
+      // floating blocks
+      {x:350,y:300,w:40,h:40,type:'brick'},
+      {x:390,y:300,w:40,h:40,type:'coin'},
+      {x:430,y:300,w:40,h:40,type:'brick'},
+      {x:600,y:250,w:40,h:40,type:'coin'},
+      {x:1000,y:300,w:40,h:40,type:'brick'},
+      {x:1040,y:300,w:40,h:40,type:'coin'},
+      {x:1080,y:300,w:40,h:40,type:'brick'},
+      {x:1200,y:230,w:40,h:40,type:'powerup'},
+      {x:1500,y:320,w:120,h:20,type:'platform'},
+      {x:1750,y:300,w:40,h:40,type:'coin'},
+      {x:1900,y:250,w:200,h:20,type:'platform'},
+      {x:2200,y:320,w:40,h:40,type:'coin'},
+      {x:2200,y:280,w:40,h:40,type:'coin'},
+      {x:2400,y:400,w:0,h:0,type:'gapmarker'}, // hole placeholder
+      {x:2600,y:300,w:150,h:20,type:'platform'},
+      {x:2900,y:250,w:150,h:20,type:'platform'},
+    ],
+    holes: [ {x:1600,w:100}, {x:2450,w:120} ], // gaps in ground where no ground tile
+    enemies: [
+      {x:500,y:360,type:'crab',dir:-1,range:[400,700]},
+      {x:1100,y:360,type:'crab',dir:1,range:[950,1300]},
+      {x:1850,y:360,type:'bird',dir:-1,range:[1750,2050],baseY:360},
+      {x:2650,y:260,type:'crab',dir:1,range:[2600,2750]},
+      {x:2950,y:210,type:'bird',dir:-1,range:[2900,3050],baseY:210},
+    ],
+    fish: [ // collectible fish scattered in open air
+      {x:150,y:350},{x:200,y:350},{x:250,y:350},
+      {x:950,y:350},{x:1450,y:350},
+      {x:1950,y:200},{x:2000,y:200},{x:2050,y:200},
+      {x:2650,y:250},{x:2700,y:250},
+    ],
+    goldenFish: {x:1220,y:190},
+    flagX: 3100,
+    start: {x:50,y:300}
+  };
+}
+
+function makeLevel2(){
+  return {
+    width: 3600,
+    bg: '#3a6fd8',
+    groundY: 400,
+    platforms: [
+      {x:0,y:400,w:500,h:50,type:'ground'},
+      {x:650,y:400,w:300,h:50,type:'ground'},
+      {x:1100,y:400,w:150,h:50,type:'ground'},
+      {x:1400,y:400,w:150,h:50,type:'ground'},
+      {x:1700,y:400,w:150,h:50,type:'ground'},
+      {x:2000,y:400,w:600,h:50,type:'ground'},
+      {x:2750,y:400,w:850,h:50,type:'ground'},
+      // ice platforms floating
+      {x:250,y:280,w:100,h:20,type:'ice'},
+      {x:700,y:300,w:40,h:40,type:'brick'},
+      {x:740,y:300,w:40,h:40,type:'coin'},
+      {x:780,y:300,w:40,h:40,type:'brick'},
+      {x:900,y:230,w:40,h:40,type:'powerup'},
+      {x:1150,y:320,w:80,h:20,type:'ice'},
+      {x:1450,y:300,w:80,h:20,type:'ice'},
+      {x:1750,y:280,w:80,h:20,type:'ice'},
+      {x:2100,y:300,w:40,h:40,type:'coin'},
+      {x:2140,y:300,w:40,h:40,type:'coin'},
+      {x:2180,y:300,w:40,h:40,type:'coin'},
+      {x:2400,y:250,w:150,h:20,type:'ice'},
+      {x:2850,y:320,w:100,h:20,type:'ice'},
+      {x:3050,y:260,w:100,h:20,type:'ice'},
+      {x:3250,y:200,w:150,h:20,type:'ice'},
+    ],
+    holes: [ {x:500,w:150}, {x:950,w:150}, {x:1250,w:150}, {x:1550,w:150}, {x:1850,w:150}, {x:2600,w:150} ],
+    enemies: [
+      {x:750,y:360,type:'crab',dir:1,range:[680,900]},
+      {x:2100,y:360,type:'crab',dir:-1,range:[2050,2500]},
+      {x:2300,y:360,type:'bird',dir:1,range:[2050,2500],baseY:360},
+      {x:2900,y:360,type:'crab',dir:1,range:[2800,3550]},
+      {x:3100,y:220,type:'bird',dir:-1,range:[3000,3350],baseY:220},
+      {x:3400,y:360,type:'crab',dir:-1,range:[2850,3550]},
+    ],
+    fish: [
+      {x:150,y:350},{x:300,y:230},{x:350,y:230},
+      {x:1150,y:270},{x:1450,y:250},{x:1750,y:230},
+      {x:2450,y:200},{x:2500,y:200},
+      {x:2900,y:270},{x:3100,y:210},{x:3300,y:150},{x:3350,y:150},
+    ],
+    goldenFish: {x:920,y:190},
+    flagX: 3500,
+    start: {x:50,y:300}
+  };
+}
+
+const LEVELS = [makeLevel1(), makeLevel2()];
+let currentLevelIndex = 0;
+let level = LEVELS[0];
+
+// ---------- Sección 2: jugador y estado del juego ----------
+// El objeto player guarda la posición, velocidad, vidas, puntuación, invulnerabilidad y si está activado el modo grande.
+const player = {
+  x:50,y:300,w:34,h:34,vx:0,vy:0,
+  onGround:false, facing:1,
+  lives:3, score:0, fishCount:0,
+  invincible:0, sliding:0, big:false,
+  dead:false, won:false,
+  coyoteTimer:0,
+  jumpBuffer:0
+};
+
+function resetPlayerPosition(){
+  player.x = level.start.x;
+  player.y = level.start.y;
+  player.vx = 0; player.vy = 0;
+  player.sliding = 0;
+  player.invincible = 0;
+}
+
+function getEntitySpeed(entity){
+  const baseSpeed = entity.type === 'bird' ? ENTITY_SPEED.bird : ENTITY_SPEED.crab;
+  const levelBonus = currentLevelIndex * 0.1;
+  return baseSpeed + levelBonus;
+}
+
+let camX = 0;
+let gameState = 'start'; // start, playing, levelcomplete, gameover, win
+let coinsCollected = {}; // track collected coin/powerup tiles per level by index
+let particles = [];
+
+function resetLevelState(){
+  coinsCollected = {};
+  camX = 0;
+  level.enemies.forEach(e => { e.alive = true; e.x0 = e.x; });
+  level.fish.forEach(f => f.collected = false);
+  if(level.goldenFish) level.goldenFish.collected = false;
+  resetPlayerPosition();
+}
+
+function loadLevel(idx){
+  currentLevelIndex = idx;
+  level = LEVELS[idx];
+  document.getElementById('levelNum').textContent = idx+1;
+  resetLevelState();
+}
+
+// ---------- Sección 3: control de entrada y física del personaje ----------
+// Aquí se calcula el movimiento horizontal, el salto y la gravedad.
+// La clave es que la aceleración horizontal y la fuerza del salto estén equilibradas, para que no parezca un movimiento "eufórico".
+function update(){
+  if(gameState !== 'playing') return;
+
+  // Movimiento horizontal tipo Mario: aceleración suave y frenado natural.
+  const running = isRunning();
+  const moveAcceleration = player.big
+    ? (running ? PLAYER_CONFIG.runAcceleration + 0.05 : PLAYER_CONFIG.acceleration + 0.04)
+    : (running ? PLAYER_CONFIG.runAcceleration : PLAYER_CONFIG.acceleration);
+
+  const maxSpeed = player.sliding > 0
+    ? (player.big ? PLAYER_CONFIG.slideTopSpeed + 0.3 : PLAYER_CONFIG.slideTopSpeed)
+    : (player.big ? PLAYER_CONFIG.bigTopSpeed : (running ? PLAYER_CONFIG.runTopSpeed : PLAYER_CONFIG.topSpeed));
+
+  if(keys['ArrowLeft'] || keys['KeyA']){
+    player.vx -= moveAcceleration;
+    player.facing = -1;
+  }
+  if(keys['ArrowRight'] || keys['KeyD']){
+    player.vx += moveAcceleration;
+    player.facing = 1;
+  }
+  player.vx = Math.max(-maxSpeed, Math.min(maxSpeed, player.vx));
+  player.vx *= FRICTION;
+
+  const jumpHeld = keys['Space'] || keys['ArrowUp'] || keys['KeyW'];
+
+  // Buffer de salto y coyote time para un control más clásico.
+  if(player.onGround){
+    player.coyoteTimer = COYOTE_TIME;
+  } else {
+    player.coyoteTimer = Math.max(0, player.coyoteTimer - 1);
+  }
+
+  if(jumpQueued){
+    player.jumpBuffer = JUMP_BUFFER;
+    jumpQueued = false;
+  } else {
+    player.jumpBuffer = Math.max(0, player.jumpBuffer - 1);
+  }
+
+  if(player.jumpBuffer > 0 && player.coyoteTimer > 0){
+    const jumpForce = player.big ? PLAYER_CONFIG.bigJumpForce : PLAYER_CONFIG.jumpForce;
+    player.vy = -jumpForce;
+    player.onGround = false;
+    player.coyoteTimer = 0;
+    player.jumpBuffer = 0;
+  }
+
+  // Acortamiento del salto si se suelta antes de tiempo: sensación más clásica de Mario.
+  if(!jumpHeld && player.vy < -2) {
+    player.vy += PLAYER_CONFIG.jumpCutoff;
+  }
+
+  player.vy += GRAVITY;
+  if(player.vy > MAX_FALL_SPEED) player.vy = MAX_FALL_SPEED;
+
+  player.x += player.vx;
+  player.y += player.vy;
+
+  if(player.sliding > 0) player.sliding -= 1;
+
+  // collide with platforms
+  player.onGround = false;
+  for(const p of level.platforms){
+    if(p.type === 'gapmarker') continue;
+    if(rectsOverlap(player, p)){
+      resolveCollision(player, p);
+    }
+  }
+
+  // fall in hole = death
+  if(player.y > H + 100){
+    playerDie();
+    return;
+  }
+
+  // bounds
+  if(player.x < 0) player.x = 0;
+  if(player.x > level.width - player.w) player.x = level.width - player.w;
+
+  // camera
+  camX = player.x - W/2 + player.w/2;
+  camX = Math.max(0, Math.min(camX, level.width - W));
+
+  // enemies
+  updateEnemies();
+
+  // fish collection
+  for(const f of level.fish){
+    if(!f.collected && rectsOverlap(player, {x:f.x,y:f.y,w:24,h:24})){
+      f.collected = true;
+      player.fishCount++;
+      player.score += 50;
+      spawnParticles(f.x, f.y, '#fff');
+    }
+  }
+  if(level.goldenFish && !level.goldenFish.collected){
+    const gf = level.goldenFish;
+    if(rectsOverlap(player, {x:gf.x,y:gf.y,w:28,h:28})){
+      gf.collected = true;
+      player.sliding = 180;
+      player.score += 200;
+      spawnParticles(gf.x, gf.y, '#ffd700');
+    }
+  }
+
+  // powerup / coin blocks
+  for(const p of level.platforms){
+    if((p.type==='coin' || p.type==='powerup') && !coinsCollected[platKey(p)]){
+      if(rectsOverlap(player, p)){
+        coinsCollected[platKey(p)] = true;
+        if(p.type==='coin'){ player.score += 100; player.fishCount++; }
+        if(p.type==='powerup'){ player.big = true; player.score += 300; }
+        spawnParticles(p.x+p.w/2, p.y, p.type==='powerup' ? '#ff6b52' : '#ffe066');
+      }
+    }
+  }
+
+  if(player.invincible > 0) player.invincible--;
+
+  // flag / win
+  if(player.x + player.w >= level.flagX){
+    levelComplete();
+  }
+
+  updateParticles();
+  updateUI();
+}
+
+function platKey(p){ return p.x+'_'+p.y+'_'+p.type; }
+
+function rectsOverlap(a,b){
+  return a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y;
+}
+
+function resolveCollision(player, p){
+  // simple AABB resolve: find overlap depth on each axis, resolve smaller
+  const overlapX = Math.min(player.x+player.w - p.x, p.x+p.w - player.x);
+  const overlapY = Math.min(player.y+player.h - p.y, p.y+p.h - player.y);
+  if(overlapX < overlapY){
+    if(player.x < p.x) player.x -= overlapX; else player.x += overlapX;
+    player.vx = 0;
+  } else {
+    if(player.y < p.y){
+      player.y -= overlapY;
+      player.vy = 0;
+      player.onGround = true;
+    } else {
+      player.y += overlapY;
+      player.vy = 0;
+    }
+  }
+}
+
+function updateEnemies(){
+  for(const e of level.enemies){
+    if(!e.alive) continue;
+    const espeed = getEntitySpeed(e);
+    e.x += espeed * e.dir;
+    if(e.x < e.range[0] || e.x > e.range[1]) e.dir *= -1;
+    if(e.type === 'bird'){
+      e.y = e.baseY + Math.sin(e.x/30)*20;
+    }
+    const ew = e.type==='crab'?32:30, eh = e.type==='crab'?24:24;
+    const ebox = {x:e.x,y:e.y,w:ew,h:eh};
+    if(player.invincible <= 0 && rectsOverlap(player, ebox)){
+      // stomp check: falling and above enemy
+      if(player.vy > 0 && player.y + player.h - e.y < 20){
+        e.alive = false;
+        player.vy = -8;
+        player.score += 150;
+        spawnParticles(e.x, e.y, '#ff4444');
+      } else {
+        playerHit();
+      }
+    }
+  }
+}
+
+function playerHit(){
+  if(player.sliding > 0) return; // sliding = invincible-ish, plows through
+  if(player.invincible > 0) return;
+
+  if(player.big){
+    player.big = false;
+    player.invincible = 120;
+    player.vx = -3 * player.facing;
+    player.vy = -4;
+    updateUI();
+    return;
+  }
+
+  player.lives--;
+  player.invincible = 90;
+  player.vx = -5 * player.facing;
+  player.vy = -8;
+  if(player.lives <= 0){
+    gameOver();
+  }
+  updateUI();
+}
+
+function playerDie(){
+  player.lives--;
+  updateUI();
+  if(player.lives <= 0){
+    gameOver();
+  } else {
+    resetPlayerPosition();
+  }
+}
+
+function spawnParticles(x,y,color){
+  for(let i=0;i<8;i++){
+    particles.push({
+      x:x+15,y:y+15,
+      vx:(Math.random()-0.5)*6,
+      vy:-Math.random()*6-2,
+      life:30, color
+    });
+  }
+}
+function updateParticles(){
+  for(const pt of particles){
+    pt.x += pt.vx; pt.y += pt.vy; pt.vy += 0.3; pt.life--;
+  }
+  particles = particles.filter(p=>p.life>0);
+}
+
+function updateUI(){
+  document.getElementById('lives').textContent = player.lives;
+  document.getElementById('score').textContent = player.score;
+  document.getElementById('fish').textContent = player.fishCount;
+}
+
+function levelComplete(){
+  gameState = 'levelcomplete';
+  const msg = document.getElementById('msg');
+  if(currentLevelIndex < LEVELS.length - 1){
+    msg.innerHTML = '¡NIVEL ' + (currentLevelIndex+1) + ' COMPLETADO! 🐧<br><span style="font-size:20px">Pulsa ENTER para continuar</span>';
+  } else {
+    msg.innerHTML = '¡FELICIDADES! 🏆<br>Completaste los 2 niveles<br><span style="font-size:20px">Puntuación final: '+player.score+'</span>';
+  }
+  msg.style.display = 'block';
+}
+
+function gameOver(){
+  gameState = 'gameover';
+  const msg = document.getElementById('msg');
+  msg.innerHTML = 'GAME OVER 💀<br><span style="font-size:20px">Pulsa ENTER para reintentar</span>';
+  msg.style.display = 'block';
+}
+
+document.addEventListener('keydown', e=>{
+  if(e.code === 'Enter'){
+    if(gameState === 'levelcomplete'){
+      if(currentLevelIndex < LEVELS.length - 1){
+        loadLevel(currentLevelIndex+1);
+        document.getElementById('msg').style.display='none';
+        gameState = 'playing';
+      } else {
+        // restart whole game
+        player.lives=3; player.score=0; player.fishCount=0; player.big=false;
+        loadLevel(0);
+        document.getElementById('msg').style.display='none';
+        gameState = 'playing';
+        updateUI();
+      }
+    } else if(gameState === 'gameover'){
+      player.lives=3; player.score=0; player.fishCount=0; player.big=false;
+      loadLevel(0);
+      document.getElementById('msg').style.display='none';
+      gameState = 'playing';
+      updateUI();
+    }
+  }
+});
+
+document.getElementById('startBtn').addEventListener('click', ()=>{
+  document.getElementById('startScreen').style.display = 'none';
+  loadLevel(0);
+  gameState = 'playing';
+  updateUI();
+});
+
+// ---------- Sección 4: colisiones, enemigos y lógica del juego ----------
+// Aquí se resuelven choques con plataformas, se detectan enemigos, se recoge comida y se comprueba si se ha ganado el nivel.
+
+// ---------- Sección 5: renderizado (dibujos) ----------
+function draw(){
+  ctx.fillStyle = level.bg;
+  ctx.fillRect(0,0,W,H);
+
+  drawClouds();
+
+  ctx.save();
+  ctx.translate(-camX, 0);
+
+  // platforms
+  for(const p of level.platforms){
+    if(p.type === 'gapmarker') continue;
+    drawPlatform(p);
+  }
+
+  // fish
+  for(const f of level.fish){
+    if(!f.collected) drawFish(f.x, f.y, 24);
+  }
+  if(level.goldenFish && !level.goldenFish.collected){
+    drawFish(level.goldenFish.x, level.goldenFish.y, 28, true);
+  }
+
+  // flag
+  drawFlag(level.flagX);
+
+  // enemies
+  for(const e of level.enemies){
+    if(e.alive) drawEnemy(e);
+  }
+
+  // particles
+  for(const pt of particles){
+    ctx.fillStyle = pt.color;
+    ctx.globalAlpha = Math.max(0, pt.life/30);
+    ctx.fillRect(pt.x, pt.y, 6, 6);
+    ctx.globalAlpha = 1;
+  }
+
+  // player
+  if(gameState === 'playing' || gameState==='levelcomplete') drawPenguin();
+
+  ctx.restore();
+}
+
+function drawClouds(){
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  const cloudBase = (camX*0.3) % 900;
+  for(let i=-1;i<3;i++){
+    const cx = 100 + i*400 - cloudBase;
+    drawCloud(cx, 60);
+    drawCloud(cx+180, 100);
+  }
+}
+function drawCloud(x,y){
+  ctx.beginPath();
+  ctx.arc(x,y,20,0,Math.PI*2);
+  ctx.arc(x+22,y-10,25,0,Math.PI*2);
+  ctx.arc(x+45,y,20,0,Math.PI*2);
+  ctx.fill();
+}
+
+function drawPlatform(p){
+  if(p.type === 'ground'){
+    ctx.fillStyle = '#c97a3d';
+    ctx.fillRect(p.x, p.y, p.w, p.h);
+    ctx.fillStyle = '#e0a868';
+    ctx.fillRect(p.x, p.y, p.w, 10);
+    // snow cap
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(p.x, p.y-6, p.w, 8);
+  } else if(p.type === 'brick'){
+    if(coinsCollected[platKey(p)]) return;
+    ctx.fillStyle = '#a86a3d';
+    ctx.fillRect(p.x,p.y,p.w,p.h);
+    ctx.strokeStyle = '#7a4a29';
+    ctx.lineWidth=2;
+    ctx.strokeRect(p.x,p.y,p.w,p.h);
+  } else if(p.type === 'coin'){
+    if(coinsCollected[platKey(p)]) return;
+    ctx.fillStyle = '#f4b942';
+    ctx.fillRect(p.x,p.y,p.w,p.h);
+    ctx.strokeStyle = '#c98a1e';
+    ctx.strokeRect(p.x,p.y,p.w,p.h);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 18px monospace';
+    ctx.fillText('?', p.x+12, p.y+27);
+  } else if(p.type === 'powerup'){
+    if(coinsCollected[platKey(p)]) return;
+    ctx.fillStyle = '#ff6b52';
+    ctx.fillRect(p.x,p.y,p.w,p.h);
+    ctx.strokeStyle = '#a83a28';
+    ctx.strokeRect(p.x,p.y,p.w,p.h);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 18px monospace';
+    ctx.fillText('★', p.x+10, p.y+27);
+  } else if(p.type === 'platform'){
+    ctx.fillStyle = '#8a5a2f';
+    ctx.fillRect(p.x,p.y,p.w,p.h);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(p.x,p.y-4,p.w,6);
+  } else if(p.type === 'ice'){
+    ctx.fillStyle = '#bde6ff';
+    ctx.fillRect(p.x,p.y,p.w,p.h);
+    ctx.strokeStyle = '#7fc4e8';
+    ctx.strokeRect(p.x,p.y,p.w,p.h);
+  }
+}
+
+function drawFish(x,y,size,golden){
+  ctx.save();
+  ctx.translate(x+size/2, y+size/2);
+  ctx.fillStyle = golden ? '#ffd700' : '#7fd4ff';
+  ctx.beginPath();
+  ctx.ellipse(0,0,size/2,size/3,0,0,Math.PI*2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(size/2-2,0);
+  ctx.lineTo(size/2+10,-8);
+  ctx.lineTo(size/2+10,8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.arc(-size/4,-2,2,0,Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawFlag(x){
+  ctx.fillStyle = '#ccc';
+  ctx.fillRect(x, 150, 6, 250);
+  ctx.fillStyle = '#e94f37';
+  ctx.beginPath();
+  ctx.moveTo(x+6,150);
+  ctx.lineTo(x+50,165);
+  ctx.lineTo(x+6,180);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle='#c97a3d';
+  ctx.fillRect(x-15,395,36,10);
+}
+
+function drawEnemy(e){
+  ctx.save();
+  if(e.type === 'crab'){
+    ctx.translate(e.x, e.y);
+    ctx.fillStyle = '#e94f37';
+    ctx.beginPath();
+    ctx.ellipse(16,12,16,10,0,0,Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.arc(10,6,2,0,Math.PI*2);
+    ctx.arc(22,6,2,0,Math.PI*2);
+    ctx.fill();
+    ctx.strokeStyle = '#e94f37';
+    ctx.lineWidth=3;
+    ctx.beginPath();
+    ctx.moveTo(0,10); ctx.lineTo(-8,4);
+    ctx.moveTo(32,10); ctx.lineTo(40,4);
+    ctx.stroke();
+  } else if(e.type === 'bird'){
+    ctx.translate(e.x, e.y);
+    ctx.fillStyle = '#555';
+    ctx.beginPath();
+    ctx.ellipse(15,12,15,9,0,0,Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = '#f4b942';
+    ctx.beginPath();
+    ctx.moveTo(e.dir>0?28:2,12);
+    ctx.lineTo(e.dir>0?38:-8,10);
+    ctx.lineTo(e.dir>0?28:2,16);
+    ctx.fill();
+    ctx.fillStyle='#333';
+    ctx.beginPath();
+    ctx.moveTo(5,8); ctx.lineTo(-5,0); ctx.lineTo(10,4); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(20,8); ctx.lineTo(30,0); ctx.lineTo(18,4); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawPenguin(){
+  ctx.save();
+  const px = player.x, py = player.y;
+  const flash = player.invincible > 0 && Math.floor(player.invincible/5)%2===0;
+  if(flash){ ctx.globalAlpha = 0.4; }
+
+  ctx.translate(px+player.w/2, py+player.h/2);
+  ctx.scale(player.facing, 1);
+  ctx.translate(-player.w/2, -player.h/2);
+
+  const bodyColor = player.big ? '#2b3a55' : '#222';
+  const sizeScale = player.big ? 1.18 : 1;
+  ctx.scale(sizeScale, sizeScale);
+
+  // sliding pose (belly slide)
+  if(player.sliding > 0){
+    ctx.save();
+    ctx.rotate(Math.PI/2 * player.facing >=0 ? -0.3 : 0.3);
+  }
+
+  // body
+  ctx.fillStyle = bodyColor;
+  ctx.beginPath();
+  ctx.ellipse(17,20,16,15,0,0,Math.PI*2);
+  ctx.fill();
+  // belly
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.ellipse(19,22,10,11,0,0,Math.PI*2);
+  ctx.fill();
+  // wings
+  ctx.fillStyle = bodyColor;
+  ctx.beginPath();
+  ctx.ellipse(4,20,5,10,0.3,0,Math.PI*2);
+  ctx.fill();
+  // feet
+  ctx.fillStyle = '#f4a637';
+  ctx.fillRect(8,32,8,5);
+  ctx.fillRect(20,32,8,5);
+  // head
+  ctx.fillStyle = bodyColor;
+  ctx.beginPath();
+  ctx.arc(20,8,10,0,Math.PI*2);
+  ctx.fill();
+  // eye
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(25,6,3,0,Math.PI*2);
+  ctx.fill();
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.arc(26,6,1.5,0,Math.PI*2);
+  ctx.fill();
+  // beak
+  ctx.fillStyle = '#f4a637';
+  ctx.beginPath();
+  ctx.moveTo(29,8);
+  ctx.lineTo(38,10);
+  ctx.lineTo(29,13);
+  ctx.closePath();
+  ctx.fill();
+
+  if(player.sliding > 0){ ctx.restore(); }
+
+  ctx.restore();
+}
+
+// ---------- Main loop ----------
+function loop(){
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
